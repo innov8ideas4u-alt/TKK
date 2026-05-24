@@ -12,3 +12,6 @@ __pycache__/
 .testmondata
 .atlas/00-urgent-alerts.md.lock/
 .atlas/ghost_ci.pid
+
+# Ghost CI telemetry (TKK Phase 2.5a) — runtime data
+.atlas/ghost_telemetry.jsonl

@@ -194,6 +194,30 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File D:\Dev\Projects\tkk\install\uninst
 Restores most recent `settings.json.bak.ghost_ci.*` backup, removes
 `~/.tkk/ghost_ci/`, kills any running daemon. Phase 1 hooks preserved.
 
+## Telemetry (Phase 2.5a)
+
+Ghost CI emits one append-only JSON line per validation event to
+`.atlas/ghost_telemetry.jsonl` (gitignored, runtime data).
+
+Failure-safe: telemetry never crashes the daemon. Phase 2.5b (next week)
+adds the analyzer + dashboard; 2.5a just captures raw data.
+
+Schema (14 fields per record):
+
+- `timestamp` — UTC ISO 8601 with `Z` suffix
+- `event` — `ghost_run` | `warm_up`
+- `trigger_file` — relative path of changed file
+- `test_target` — resolved test target (or `null`)
+- `selection_mode` — `testmon` | `testmon_interrupted` | `warm_up`
+- `exit_code` — pytest exit code (`-15` if interrupted)
+- `pytest_output_bytes` — total stdout+stderr bytes
+- `pytest_duration_ms` — wall time
+- `distillation_attempted` / `distillation_succeeded` — bool
+- `distillation_tokens_out` — `len(json.dumps(distilled))` proxy
+- `ollama_latency_ms` — model call wall time (or `null`)
+- `model_resident` — `True` if Ollama kept model in RAM
+- `alert_written` — `True` if a `00-urgent-alerts.md` entry was appended
+
 ## License
 
 MIT (see LICENSE).

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -42,6 +43,7 @@ from distiller import (  # noqa: E402
 from event_handler import GhostCIEventHandler, MultiFileDebouncer  # noqa: E402
 from mutex import LOCK_FILENAME, acquire_daemon_mutex, release_daemon_mutex  # noqa: E402
 from pipe_reader import GhostPipeReader  # noqa: E402
+from telemetry import build_record, log_telemetry  # noqa: E402
 
 CREATE_NO_WINDOW = 0x08000000
 PYTEST_HARD_TIMEOUT_S = 15.0
@@ -178,54 +180,98 @@ class SystemObserverThread(threading.Thread):
 
 
 async def _process_file(modified_file: str, project_root: str, alert_path: str) -> None:
-    """Run pytest, collect tail, distill, write alert."""
-    proc = execute_pytest(["-q", "--testmon"], project_root)
-    _pytest_inflight.append(proc)
-    reader = GhostPipeReader(proc)
+    """Run pytest, collect tail, distill, write alert. Single-exit + telemetry."""
+    start_time = time.time()
+    selection_mode = "testmon"
+    interrupted = False
+    distillation_attempted = False
+    distillation_succeeded: bool | None = None
+    distillation_tokens_out: int | None = None
+    ollama_elapsed_ms: int | None = None
+    model_resident_result: bool | None = None
+    alert_written = False
+    tail_text = ""
+    exit_code = -1
     try:
+        proc = execute_pytest(["-q", "--testmon"], project_root)
+        _pytest_inflight.append(proc)
+        reader = GhostPipeReader(proc)
         try:
-            proc.wait(timeout=PYTEST_HARD_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            interrupt_running_pytest(proc)
-        reader.join(timeout=1.0)
+            try:
+                proc.wait(timeout=PYTEST_HARD_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                interrupt_running_pytest(proc)
+                interrupted = True
+            reader.join(timeout=1.0)
+        finally:
+            if proc in _pytest_inflight:
+                _pytest_inflight.remove(proc)
+
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        tail_lines = reader.tail(50)
+        tail_text = "\n".join(tail_lines)
+
+        # Empty suite (exit 5) = nominal
+        if exit_code == 0 or exit_code == 5:
+            if write_with_lock(alert_path, render_nominal()):
+                alert_written = True
+            return
+
+        # SyntaxError barrage trap — silently swallow
+        if is_syntax_error_output(tail_text, exit_code):
+            return
+
+        # Filter unrelated tracebacks
+        relevant = filter_relevant_tracebacks(tail_text, modified_file)
+        if relevant is None:
+            if write_with_lock(alert_path, render_nominal()):
+                alert_written = True
+            return
+
+        # Distill via 4070 Ti Ollama, fallback on eviction/failure
+        model_resident_result = await is_model_resident()
+        if not model_resident_result:
+            if write_with_lock(alert_path, render_fallback(tail_text)):
+                alert_written = True
+            return
+        distillation_attempted = True
+        _ollama_start = time.time()
+        distilled = await distill_error(tail_text)
+        ollama_elapsed_ms = int((time.time() - _ollama_start) * 1000)
+        if distilled is None:
+            distillation_succeeded = False
+            if write_with_lock(alert_path, render_fallback(tail_text)):
+                alert_written = True
+            return
+        distillation_succeeded = True
+        try:
+            distillation_tokens_out = len(json.dumps(distilled))
+        except Exception:
+            distillation_tokens_out = None
+        if write_with_lock(alert_path, render_failure(
+            summary=str(distilled.get("summary", "")),
+            failing_file=str(distilled.get("file", modified_file)),
+            line_number=distilled.get("line_number"),
+            exception_type=str(distilled.get("exception_type", "Unknown")),
+            raw_tail=tail_text,
+        )):
+            alert_written = True
     finally:
-        if proc in _pytest_inflight:
-            _pytest_inflight.remove(proc)
-
-    exit_code = proc.returncode if proc.returncode is not None else -1
-    tail_lines = reader.tail(50)
-    tail_text = "\n".join(tail_lines)
-
-    # Empty suite (exit 5) = nominal
-    if exit_code == 0 or exit_code == 5:
-        write_with_lock(alert_path, render_nominal())
-        return
-
-    # SyntaxError barrage trap — silently swallow
-    if is_syntax_error_output(tail_text, exit_code):
-        return
-
-    # Filter unrelated tracebacks
-    relevant = filter_relevant_tracebacks(tail_text, modified_file)
-    if relevant is None:
-        write_with_lock(alert_path, render_nominal())
-        return
-
-    # Distill via 4070 Ti Ollama, fallback on eviction/failure
-    if not await is_model_resident():
-        write_with_lock(alert_path, render_fallback(tail_text))
-        return
-    distilled = await distill_error(tail_text)
-    if distilled is None:
-        write_with_lock(alert_path, render_fallback(tail_text))
-        return
-    write_with_lock(alert_path, render_failure(
-        summary=str(distilled.get("summary", "")),
-        failing_file=str(distilled.get("file", modified_file)),
-        line_number=distilled.get("line_number"),
-        exception_type=str(distilled.get("exception_type", "Unknown")),
-        raw_tail=tail_text,
-    ))
+        duration_ms = int((time.time() - start_time) * 1000)
+        log_telemetry(project_root, build_record(
+            trigger_file=modified_file,
+            test_target="--testmon",
+            selection_mode=(selection_mode + "_interrupted") if interrupted else selection_mode,
+            exit_code=(-15 if interrupted else exit_code),
+            pytest_output_bytes=len(tail_text.encode("utf-8")),
+            pytest_duration_ms=duration_ms,
+            distillation_attempted=distillation_attempted,
+            distillation_succeeded=distillation_succeeded,
+            distillation_tokens_out=distillation_tokens_out,
+            ollama_latency_ms=ollama_elapsed_ms,
+            model_resident=model_resident_result,
+            alert_written=alert_written,
+        ))
 
 
 def main() -> int:
@@ -237,7 +283,16 @@ def main() -> int:
     lock_path = str(atlas_dir / LOCK_FILENAME)
     acquire_daemon_mutex(lock_path)
 
+    _warm_start = time.time()
     warm_up_testmon(project_root)
+    log_telemetry(project_root, build_record(
+        trigger_file=None,
+        test_target=None,
+        selection_mode="warm_up",
+        exit_code=0,
+        pytest_output_bytes=0,
+        pytest_duration_ms=int((time.time() - _warm_start) * 1000),
+    ))
 
     observer_thread = SystemObserverThread(
         parent_pid=args.slave_to_pid,
