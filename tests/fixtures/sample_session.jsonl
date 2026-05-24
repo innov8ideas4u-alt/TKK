@@ -1,0 +1,2 @@
+{"ts": 1716494072.123, "file": "d:/dev/projects/foo/bar.py", "file_orig": "D:\\Dev\\Projects\\foo\\bar.py", "offset": 0, "limit": 500, "mtime": 1716494070.0, "decision": "allow", "rule": "A"}
+{"ts": 1716494080.0, "file": "d:/dev/projects/foo/bar.py", "file_orig": "D:\\Dev\\Projects\\foo\\bar.py", "offset": 500, "limit": 500, "mtime": 1716494070.0, "decision": "allow", "rule": "B"}
