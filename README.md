@@ -1,4 +1,6 @@
-# TKK - Token Killer Kit, Phase 1: Read Guard
+# TKK - Token Killer Kit
+
+Phase 1: Read Guard. Phase 2: Ghost CI (pre-emptive validation daemon).
 
 A Claude Code `PreToolUse` hook that blocks redundant `Read` tool calls.
 
@@ -130,10 +132,67 @@ D:\Dev\Projects\tkk\
 
 ## Roadmap (future phases)
 
-- Phase 2: Stop-hook breadcrumb file (replaces `/resume` cache tax)
-- Phase 3: SessionStart Ollama-compressed atlas brief
+- Phase 2: Ghost CI (DONE — see below)
+- Phase 3: Stop-hook breadcrumb file (replaces `/resume` cache tax)
 - Phase 4: PostToolUse Bash output compression
 - Phase 5: Burn-alarm Windows toast at $25/$50/$100 thresholds
+
+---
+
+# Phase 2: Ghost CI
+
+A Windows-native Python daemon that watches `.py` saves, runs `pytest --testmon`,
+distills failures via local Ollama (llama3.1:8b-instruct-q8_0 on port 11535),
+and writes alerts to `.atlas/00-urgent-alerts.md` before cc can react.
+
+Goal: cc cannot beat the validation loop. By the time cc formulates its next
+tool call, the alerts file already reflects reality.
+
+## Status
+
+- Spec: v5 final (`docs/ghost_ci_design.md`)
+- Tests: 55/55 passing (`ghost_ci/tests/`)
+- Deps: watchdog 4.0.0, aiohttp 3.9.3, psutil 5.9.8, colorama 0.4.6, pytest-testmon 2.1.1
+
+## Architecture
+
+1. **SessionStart hook** spawns `daemon.py` detached (`CREATE_NO_WINDOW`),
+   PID-pinned to the cc Node.js process. Daemon dies when cc dies.
+2. **Watchdog** watches the project root for `.py` saves.
+3. **Debouncer** (1.5s window) coalesces edit bursts per-file.
+4. **pytest --testmon** runs only impacted tests in an isolated cache
+   (`.ghost_pytest_cache/`).
+5. **Distiller** sends failing traceback to Ollama; produces 1-2 sentence summary.
+6. **Atomic writer** (tempfile + `os.replace` + lockdir) updates
+   `.atlas/00-urgent-alerts.md`. cc reads it before every tool call.
+
+SyntaxError mid-keystroke is silently swallowed (Trap 1: schizophrenic loop).
+
+## Install (Phase 2)
+
+```powershell
+cd <your-project-with-.atlas>
+pwsh -NoProfile -ExecutionPolicy Bypass -File D:\Dev\Projects\tkk\install\install_ghost_ci.ps1
+```
+
+Pre-flight verifies Ollama on port 11535 has llama3.1:8b-instruct-q8_0 pulled.
+
+## Kill switch (Phase 2)
+
+```powershell
+'{"ghost_ci_enabled": false}' | Set-Content $env:USERPROFILE\.tkk\ghost_ci\config.json
+```
+
+Daemon polls config every 2s and shuts down within that window.
+
+## Uninstall (Phase 2)
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File D:\Dev\Projects\tkk\install\uninstall_ghost_ci.ps1
+```
+
+Restores most recent `settings.json.bak.ghost_ci.*` backup, removes
+`~/.tkk/ghost_ci/`, kills any running daemon. Phase 1 hooks preserved.
 
 ## License
 

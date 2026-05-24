@@ -6,3 +6,9 @@ __pycache__/
 .idea/
 .vscode/
 *.tmp
+
+# Ghost CI cache isolation (TKK Phase 2)
+.ghost_pytest_cache/
+.testmondata
+.atlas/00-urgent-alerts.md.lock/
+.atlas/ghost_ci.pid
