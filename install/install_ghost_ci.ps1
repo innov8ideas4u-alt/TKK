@@ -102,12 +102,20 @@ Write-Host "  Backup: $BackupPath"
 $settings = Get-Content $SettingsPath -Raw | ConvertFrom-Json -AsHashtable
 if (-not $settings.hooks) { $settings.hooks = @{} }
 if (-not $settings.hooks.SessionStart) { $settings.hooks.SessionStart = @() }
-$existingGhost = $settings.hooks.SessionStart | Where-Object { $_.command -like "*spawn_ghost*" }
+# cc hook schema for SessionStart: { hooks: [{type, command, timeout}] }
+# Note: SessionStart entries don't take a matcher (matcher is PreToolUse/PostToolUse only).
+$existingGhost = $settings.hooks.SessionStart | Where-Object {
+    $_.hooks -and ($_.hooks | Where-Object { $_.command -like "*spawn_ghost*" })
+}
 if ($null -eq $existingGhost) {
     $settings.hooks.SessionStart += @{
-        type = "command"
-        command = "python `"$GhostDir\spawn_ghost.py`""
-        timeout = 5
+        hooks = @(
+            @{
+                type = "command"
+                command = "python `"$GhostDir\spawn_ghost.py`""
+                timeout = 5
+            }
+        )
     }
     Write-Host "  Registered SessionStart hook"
 } else {

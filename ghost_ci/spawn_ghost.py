@@ -37,11 +37,36 @@ def get_claude_node_pid() -> int:
 
 
 def get_project_root() -> Path:
-    """Walk upward looking for .git/ or .atlas/. Fallback to cwd."""
+    """Resolve project root.
+
+    Priority order:
+    1. $CLAUDE_PROJECT_DIR if set and valid (cc-authoritative)
+    2. Walk upward from cwd, preferring .git/ (real repo)
+    3. Walk upward from cwd, accepting .atlas/ (atlas-only project)
+    4. Fallback: cwd
+
+    Two-pass walk ensures a real git repo further up the tree beats
+    a closer orphan .atlas/ directory.
+    """
+    env_root = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env_root:
+        env_path = Path(env_root).resolve()
+        if env_path.exists() and env_path.is_dir():
+            return env_path
+
     cur = Path(os.getcwd()).resolve()
-    for candidate in [cur] + list(cur.parents):
-        if (candidate / ".git").exists() or (candidate / ".atlas").exists():
+    candidates = [cur] + list(cur.parents)
+
+    # Pass 1: prefer .git/ (real repo wins over orphan .atlas/)
+    for candidate in candidates:
+        if (candidate / ".git").exists():
             return candidate
+
+    # Pass 2: accept .atlas/ (atlas-only project, e.g. early-stage scratch)
+    for candidate in candidates:
+        if (candidate / ".atlas").exists():
+            return candidate
+
     return cur
 
 
